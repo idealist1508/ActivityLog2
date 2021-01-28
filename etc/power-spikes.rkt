@@ -200,13 +200,13 @@
   (q1 median q3 lower-whisker uppwer-whisker outliers)
   #:transparent)
 
-(define (samples->bwdata vs [ws #f])
+(define (samples->bwdata vs [ws #f] #:iqr-scale [iqr-scale 1.5])
   (let* ([q1 (quantile 0.25 < vs ws)]
          [median (quantile 0.5 < vs ws)]
          [q3 (quantile 0.75 < vs ws)]
          [iqr (- q3 q1)]
-         [lower-limit (- q1 (* 1.5 iqr))]
-         [upper-limit (+ q3 (* 1.5 iqr))]
+         [lower-limit (- q1 (* iqr-scale iqr))]
+         [upper-limit (+ q3 (* iqr-scale iqr))]
          [lower-whisker (foldl
                          (lambda (sample a)
                            (if (> sample lower-limit) (min a sample) a))
@@ -336,17 +336,17 @@
               (values vs ws)))
         (for/fold ([vs '()] [ws #f])
                   ([sample (in-data-frame df series)])
-          (if sample
+          (if (and sample (> sample 0))
               (values (cons sample vs) #f)
               (values vs #f)))))
-  (define data (samples->bwdata vs ws))
+  (define data (samples->bwdata vs ws #:iqr-scale iqr-scale))
   (printf "data: ~a~%" data)
   (parameterize ([plot-y-ticks no-ticks])
     (plot (box-and-whiskers-renderer 1 data #:show-median? #t #:show-outliers? #t
                                      #:whiskers-style 'short-dash
                                      #:invert? #t
                                      )
-           #:y-min -5 #:y-max 5
+           #:y-min -2 #:y-max 3
            #:x-min -10 #:x-max 800
           )))
 
@@ -359,3 +359,5 @@
 ;;
 ;;
 ;; NOTE: AL2 will need to be restarted to see the effects.
+
+;; 2
