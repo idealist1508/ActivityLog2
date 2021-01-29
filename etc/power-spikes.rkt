@@ -1,5 +1,9 @@
 #lang racket
-(require plot)
+(require plot
+         "../rkt/widgets/box-and-whiskers.rkt"
+         "../rkt/session-df/series-metadata.rkt"
+         plot-container/hover-util
+         racket/gui)
 
 ;; power-spikes.rkt -- clear power spikes and re-calculate power related
 ;; metrics.
@@ -196,117 +200,6 @@
 
 
 
-(struct bwdata
-  (q1 median q3 lower-whisker uppwer-whisker outliers)
-  #:transparent)
-
-(define (samples->bwdata vs [ws #f] #:iqr-scale [iqr-scale 1.5])
-  (let* ([q1 (quantile 0.25 < vs ws)]
-         [median (quantile 0.5 < vs ws)]
-         [q3 (quantile 0.75 < vs ws)]
-         [iqr (- q3 q1)]
-         [lower-limit (- q1 (* iqr-scale iqr))]
-         [upper-limit (+ q3 (* iqr-scale iqr))]
-         [lower-whisker (foldl
-                         (lambda (sample a)
-                           (if (> sample lower-limit) (min a sample) a))
-                         upper-limit vs)]
-         [upper-whisker (foldl
-                         (lambda (sample a)
-                           (if (< sample upper-limit) (max a sample) a))
-                         lower-limit vs)]
-         [outliers (filter (lambda (sample) (or (> sample upper-whisker)
-                                                (< sample lower-whisker))) vs)])
-    (bwdata q1 median q3 lower-whisker upper-whisker outliers)))
-
-(define (box-and-whiskers-renderer
-         x data
-
-         #:invert? (invert? #f)
-
-         #:gap (gap (discrete-histogram-gap))
-
-         ;; Rectangles options
-         #:box-color (box-color (rectangle-color))
-         #:box-style (box-style (rectangle-style))
-         #:box-line-color (box-line-color (rectangle-line-color))
-         #:box-line-width (box-line-width (rectangle-line-width))
-         #:box-line-style (box-line-style (rectangle-line-style))
-         #:box-alpha (box-alpha (rectangle-alpha))
-
-         #:show-outliers? (show-outliers? #t)
-         #:outlier-color (outlier-color (point-color))
-         #:outlier-sym (outlier-sym (point-sym))
-         #:outlier-fill-color (outlier-fill-color 'auto)
-         #:outlier-size (outlier-size (point-size))
-         #:outlier-line-width (outlier-line-width (point-line-width))
-         #:outlier-alpha (outlier-alpha (point-alpha))
-
-         #:show-whiskers? (show-whiskers? #t)
-         #:whiskers-color (whiskers-color (line-color))
-         #:whiskers-width (whiskers-width (line-width))
-         #:whiskers-style (whiskers-style (line-style))
-         #:whiskers-alpha (whiskers-alpha (line-alpha))
-
-         #:show-median? (show-median? #t)
-         #:median-color (median-color (line-color))
-         #:median-width (median-width (line-width))
-         #:median-style (median-style (line-style))
-         #:median-alpha (median-alpha (line-alpha))
-         )
-  (match-define (bwdata q1 median q3 lower-whisker upper-whisker outliers) data)
-  (define half-width (* 1/2 (- 1 gap)))
-  (define quater-width (* 1/4 (- 1 gap)))
-  (define maybe-invert (if invert? (lambda (x y) (vector y x)) vector))
-  (list
-   (rectangles
-    (list (maybe-invert (ivl (- x half-width) (+ x half-width)) (ivl q1 q3)))
-    #:color box-color
-    #:style box-style
-    #:line-color box-line-color
-    #:line-width box-line-width
-    #:line-style box-line-style
-    #:alpha box-alpha)
-   ;; Median line
-   (if show-median?
-       (lines (list (maybe-invert (- x half-width) median)
-                    (maybe-invert (+ x half-width) median))
-              #:color median-color
-              #:width median-width
-              #:style median-style
-              #:alpha median-alpha)
-       null)
-
-   (if show-whiskers?
-       (list
-        (lines (list (maybe-invert x lower-whisker) (maybe-invert x q1)
-                     (vector +nan.0 +nan.0)
-                     (maybe-invert x q3) (maybe-invert x upper-whisker))
-               #:color whiskers-color
-               #:width whiskers-width
-               #:style whiskers-style
-               #:alpha whiskers-alpha)
-        (lines (list
-                (maybe-invert (- x quater-width) lower-whisker)
-                (maybe-invert (+ x quater-width) lower-whisker)
-                (vector +nan.0 +nan.0)
-                (maybe-invert (- x quater-width) upper-whisker)
-                (maybe-invert (+ x quater-width) upper-whisker))
-               #:color whiskers-color
-               #:width whiskers-width
-               #:style 'solid
-               #:alpha whiskers-alpha))
-       null)
-
-   (if show-outliers?
-       (points (for/list ([o (in-list outliers)]) (maybe-invert x o))
-               #:color outlier-color
-               #:sym outlier-sym
-               #:fill-color outlier-fill-color
-               #:size outlier-size
-               #:line-width outlier-line-width
-               #:alpha outlier-alpha)
-       null)))
 
 (define (make-box-plot-ticks start-x labels)
   (define end-x (+ start-x (length labels)))
@@ -324,7 +217,6 @@
 
 (define (make-box-plot df series
                        #:name (name series)
-                       #:slot (slot 0)
                        #:weight-series (wseries "timer")
                        #:iqr-scale (iqr-scale 1.5))
   (define-values (vs ws)
@@ -339,18 +231,111 @@
           (if (and sample (> sample 0))
               (values (cons sample vs) #f)
               (values vs #f)))))
-  (define data (samples->bwdata vs ws #:iqr-scale iqr-scale))
+  (define data (samples->bnw-data vs ws #:iqr-scale iqr-scale))
   (printf "data: ~a~%" data)
   (parameterize ([plot-y-ticks no-ticks])
-    (plot (box-and-whiskers-renderer 1 data #:show-median? #t #:show-outliers? #t
-                                     #:whiskers-style 'short-dash
-                                     #:invert? #t
-                                     )
+    (plot (box-and-whiskers 1 data #:show-median? #t #:show-outliers? #t
+                            #:whiskers-style 'short-dash
+                            #:invert? #t
+                            )
            #:y-min -2 #:y-max 3
            #:x-min -10 #:x-max 800
           )))
 
+(define (make-power-spikes-info-plot df #:iqr-scale [iqr-scale 1.5])
+  (define md (find-series-metadata "pwr"))
+  (define power-samples
+    (df-select df "pwr" #:filter (lambda (sample) (and sample (> sample 0)))))
+  (define power-series (df-select* df "elapsed" "pwr" #:filter valid-only))
+  (define max-x (df-ref df (sub1 (df-row-count df)) "elapsed"))
+  (define box-plot-gap (* max-x 0.08))
+  (define box-plot-room (* max-x 0.05))
+  (define box-plot-x (- (+ box-plot-room (* 0.5 box-plot-gap))))
+  (define bnw (samples->bnw-data power-samples #:iqr-scale iqr-scale))
 
+  (printf "bnw: ~a~%" bnw)
+
+  (define outliers
+    (df-select*
+     df "elapsed" "pwr"
+     #:filter (lambda (v)
+                (match-define (vector e p) v)
+                (and e p (> p (bnw-data-uppwer-whisker bnw))))))
+
+  (define min-x (- (+ box-plot-room box-plot-room box-plot-gap)))
+  (define min-y 0)
+  (define max-y (* 1.1 (for/fold ([m 0])
+                                 ([p (in-vector power-samples)])
+                         (max m p))))
+
+  (define (closest-outlier x y)
+    (for/fold ([point #f]
+               [distance #f])
+              ([outlier (in-vector outliers)])
+      (match-define (vector e p) outlier)
+      (define d (let ([dx (/ (- e x) max-x)]
+                      [dy (/ (- p y) max-y)])
+                  (sqrt (+ (* dx dx) (* dy dy)))))
+      (if (or (not distance) (< d distance))
+          (values outlier d)
+          (values point distance))))
+
+  (define snip
+    (parameterize ([plot-y-label "Power (watts)"]
+                   [plot-x-label #f]
+                   [plot-x-ticks (time-ticks #:formats '("~H:~M"))])
+      (plot-snip
+       (list
+        (box-and-whiskers
+         bnw
+         #:x box-plot-x
+         #:gap box-plot-gap
+         #:invert? #f
+         #:whiskers-style 'short-dash)
+        (lines power-series #:color (send md plot-color) #:width 1.5)
+        (points outliers
+                #:color "coral"
+                #:sym 'circle8
+                #:size 3
+                #:line-width 2))
+       #:x-min min-x #:y-min min-y #:y-max max-y)))
+
+  (define (hover-callback snip event x y)
+    (when (and (real? x) (real? y)
+               (is-a? event mouse-event%)
+               (eq? (send event get-event-type) 'motion))
+      (if (> x 0)
+          (let-values ([(outlier distance) (closest-outlier x y)])
+            (if (and outlier (< distance 1e-2))
+                (send snip
+                      set-overlay-renderers
+                      (list
+                       (points (list outlier)
+                               #:color "coral"
+                               #:sym 'fullcircle8
+                               #:size 4
+                               #:line-width 4)
+                       (hover-label x y
+                                    "Outlier point"
+                                    (format "Time: ~a" (duration->string (vector-ref outlier 0)))
+                                    (format "Power: ~a watts" (exact-round (vector-ref outlier 1))))))
+                (let ([index (df-index-of df "elapsed" x)])
+                  (when (and index (< index (df-row-count df)))
+                    (match-define (vector elapsed pwr)
+                      (df-ref* df index "elapsed" "pwr"))
+                    (when pwr
+                      (send snip
+                            set-overlay-renderers
+                            (list
+                             (hover-vrule elapsed)
+                             (hover-label x y
+                                          (format "Time: ~a" (duration->string elapsed))
+                                          (format "Power: ~a watts" (exact-round pwr))))))))))
+                (void))))
+              
+  (send snip set-mouse-event-callback hover-callback)
+  snip)
+  
 ;; Usage notes:
 ;;
 ;; Find a cutoff power for a session id: (cutoff-power (sid->df) 0.005)
@@ -361,3 +346,4 @@
 ;; NOTE: AL2 will need to be restarted to see the effects.
 
 ;; 2
+;; 2930
