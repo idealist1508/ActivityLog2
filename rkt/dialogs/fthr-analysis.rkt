@@ -381,6 +381,23 @@ select S.start_time,
                          (make-best-rectangle segment2 (invertible-function-g transform) color2))
                    #:x-min 0 #:y-min s1-min #:y-max s1-max)))))
 
+(define (make-single-plot df segment)
+  (define series (hash-ref segment 'series))
+  (define label (hash-ref segment 'plot-label))
+  (define color (hash-ref segment 'color))
+  (define ticks (hash-ref segment 'plot-ticks))
+
+  (let-values ([(s-min s-max) (get-low+high df series)])
+    (let* ([data (df-select* df "elapsed" series #:filter valid-only)])
+      (parameterize ([plot-x-ticks (time-ticks #:formats '("~H:~M:~f"))]
+                     [plot-y-ticks ticks]
+                     [plot-x-label "Elapsed Time"]
+                     [plot-y-label label])
+        (plot-snip (list (tick-grid)
+                         (lines data #:color color #:width 2)
+                         (make-best-rectangle segment identity color))
+                   #:x-min 0 #:y-min s-min #:y-max s-max)))))
+
 (define (make-mmax-plot mmax-df segment)
   (define series(hash-ref segment 'series))
   (define label (hash-ref segment 'plot-label))
@@ -527,10 +544,16 @@ select S.start_time,
 
   (define map-snip
     (and (df-contains? df "lat" "lon")
-         (make-map-snip df primary-segment secondary-segment)))
+         (apply make-map-snip df (filter values (list primary-segment secondary-segment)))))
 
-  ;; TODO: handle the case when only one segment is present
-  (define time-plot (make-combined-plot df primary-segment secondary-segment))
+  (define time-plot
+    (cond ((and primary-segment secondary-segment)
+           (make-combined-plot df primary-segment secondary-segment))
+          (primary-segment
+           (make-single-plot df primary-segment))
+          (secondary-segment
+           (make-single-plot df secondary-segment))
+          (#t #f)))
 
   (define primary-mmax-plot
     (if primary-segment
@@ -582,7 +605,8 @@ select S.start_time,
       (send map-snip current-location current-location))
     (send snip set-overlay-renderers renderers))
 
-  (send time-plot set-mouse-event-callback hover-callback)
+  (when time-plot
+    (send time-plot set-mouse-event-callback hover-callback))
 
   (send canvas set-snips/layout
         (apply
@@ -960,33 +984,48 @@ select S.start_time,
     (define/private (load-data db session-id)
       (set! database db)
       (set! fthr-data (load-fthr-data db session-id))
-      (send dashboard-contents begin-container-sequence)
-      (queue-task "fthr-analysis/setup-plots"
-                  (lambda () (setup-plots plot-panel fthr-data)))
       (match-define (fthr df sinfo primary secondary pz sz) fthr-data)
-
       (when sinfo
         (send headline set-pict (and sinfo (pp-session-info/pict sinfo))))
-
-      (setup-analysis-display session-id
-                              primary
-                              pz
-                              primary-best
-                              primary-zones
-                              primary-group-box
-                              primary-description
-                              set-primary-button)
-
-      (setup-analysis-display session-id
-                              secondary
-                              sz
-                              secondary-best
-                              secondary-zones
-                              secondary-group-box
-                              secondary-description
-                              set-secondary-button)
-
-      (send dashboard-contents end-container-sequence))
+      (if (or primary secondary)
+          (begin
+            (send detail-panel enable #t)
+            (send dashboard-contents begin-container-sequence)
+            (queue-task "fthr-analysis/setup-plots"
+                        (lambda () (setup-plots plot-panel fthr-data)))
+            (setup-analysis-display session-id
+                                    primary
+                                    pz
+                                    primary-best
+                                    primary-zones
+                                    primary-group-box
+                                    primary-description
+                                    set-primary-button)
+            (setup-analysis-display session-id
+                                    secondary
+                                    sz
+                                    secondary-best
+                                    secondary-zones
+                                    secondary-group-box
+                                    secondary-description
+                                    set-secondary-button)
+            (send dashboard-contents end-container-sequence))
+          ;; else, try to provide a meaningful error message
+          (let ([sport (df-get-property df 'sport #f)])
+            (send detail-panel enable #f)
+            (switch-tabs 1)
+            (define message
+              (cond ((is-runnig? sport)
+                     (if (df-contains/any? df "hr" "pace")
+                         "Session is too short"
+                         "Session needs Heart Rate or Pace data"))
+                    ((is-cycling? sport)
+                     (if (df-contains/any? df "power" "hr")
+                         "Session is too short"
+                         "Session needs Power or Heart Rate data"))
+                    (#t
+                     "Session has unsupported sport type")))
+            (send plot-panel set-background-message message))))
 
     (define/private (on-close-dashboard)
       (set! database #f)
