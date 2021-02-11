@@ -48,7 +48,7 @@
          [outliers (sequence-filter
                     (lambda (sample) (or (> sample upper-whisker)
                                          (< sample lower-whisker))) vs)])
-    (bnw-data q1 median q3 lower-whisker upper-whisker outliers)))
+    (bnw-data q1 median q3 lower-whisker upper-whisker (sequence->list outliers))))
 
 (define (box-and-whiskers
          data

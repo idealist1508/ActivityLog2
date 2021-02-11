@@ -31,6 +31,7 @@
          racket/match
          racket/math
          racket/list
+         racket/format
          plot
          plot-container
          plot-container/hover-util
@@ -68,6 +69,7 @@
     (define bnw #f)    ; box-and-whiskers data produced by `samples->bnw-data`
     (define outliers #())               ; list of outlier points based on BNW
     (define bnw-renderer #f)
+    (define bnw-renderer-highlighted #f)
     (define outlier-renderer #f)
 
     (define/public (set-iqr-scale new-iqr-scale)
@@ -102,7 +104,29 @@
              #:outlier-sym 'fullcircle4
              ;; #:outlier-size (* 2.0 (point-size))
              #:outlier-line-width 1.5
+             ))
+      (set! bnw-renderer-highlighted
+            (box-and-whiskers
+             bnw
+             #:x box-plot-x
+             #:gap box-plot-gap
+             #:invert? #f
 
+             #:box-color "Sky Blue"
+             #:box-line-color "Royal Blue"
+             #:box-line-width 2.25
+
+             #:whiskers-color "Dark Slate Gray"
+             #:whiskers-width 3.0
+             #:whiskers-style 'short-dash
+
+             #:median-color "Red"
+             #:median-width 4.5
+
+             #:outlier-color "Orange"
+             #:outlier-sym 'fullcircle4
+             #:outlier-size (* 1.5 (point-size))
+             #:outlier-line-width 2.25
              ))
       (set! outlier-renderer
             (points outliers
@@ -128,41 +152,69 @@
       (if outlier?
           (hover-label
            x y
-           "Outlier point"
-           (format "Time: ~a" (duration->string duration))
-           (format "~a: ~a" (send md name) (exact-round value)))
+           (make-hover-badge
+            `(("Time" ,(duration->string duration))
+              (,(send md name) ,(~a (exact-round value)))
+              ("Outlier point"))))
           (hover-label
            x y
-           (format "Time: ~a" (duration->string duration))
-           (format "~a: ~a" (send md name) (exact-round value)))))
+           (make-hover-badge
+            `(("Time" ,(duration->string duration))
+              (,(send md name) ,(~a (exact-round value))))))))
 
     ;; NOTE: this cannot be a method (e.g. define/private as it is used as a
     ;; callback
     (define (hover-callback snip event x y)
       (define renderers (list bnw-renderer outlier-renderer))
-      (when (and (good-hover? snip x y event) (> x 0))
-        (let-values ([(outlier distance) (closest-outlier x y)])
-          (if (and outlier (< distance 1e-2))
-              (set! renderers
-                    (append
-                     renderers
-                     (list
-                      (points (list outlier)
-                              #:color "indianred"
-                              #:sym 'fullcircle8
-                              #:size 6
-                              #:line-width 5)
-                      (make-hover-label x y outlier #:outlier? #t))))
-              (let ([index (df-index-of df "elapsed" x)])
-                (when (and index (< index (df-row-count df)))
-                  (define point (df-ref* df index "elapsed" series))
-                  (when (vector-ref point 1)
-                    (set! renderers
-                          (append
-                           renderers
-                           (list
-                            (hover-vrule (vector-ref point 0))
-                            (make-hover-label x y point))))))))))
+      (cond ((not (good-hover? snip x y event)) (void))
+            ((> x 0)
+             (let-values ([(outlier distance) (closest-outlier x y)])
+               (if (and outlier (< distance 1e-2))
+                   ;; Mouse is over (close to) an outlier point, highlight it
+                   (set! renderers
+                         (append
+                          renderers
+                          (list
+                           (points (list outlier)
+                                   #:color "indianred"
+                                   #:sym 'fullcircle8
+                                   #:size 6
+                                   #:line-width 5)
+                           (make-hover-label x y outlier #:outlier? #t))))
+                   ;; Mouse is just somewhere over the plot, so we highlight
+                   ;; the current value
+                   (let ([index (df-index-of df "elapsed" x)])
+                     (when (and index (< index (df-row-count df)))
+                       (define point (df-ref* df index "elapsed" series))
+                       (when (vector-ref point 1)
+                         (set! renderers
+                               (append
+                                renderers
+                                (list
+                                 (hover-vrule (vector-ref point 0))
+                                 (make-hover-label x y point))))))))))
+            ((and bnw
+                  (> x (- box-plot-x (* box-plot-gap 1/2)))
+                  (< x (+ box-plot-x (* box-plot-gap 1/2))))
+             ;; Mouse is over the box-and-whiskers section
+             (match-define (bnw-data q1 median q3 lower-whisker uppwer-whisker o) bnw)
+             (set! renderers
+                   (append
+                    (remove bnw-renderer renderers)
+                    (list
+                     bnw-renderer-highlighted
+                     (hrule q1 #:width 1.5 #:style 'long-dash #:color "Slate Gray")
+                     (hrule median #:width 1.5 #:style 'long-dash #:color "Slate Gray")
+                     (hrule q3 #:width 1.5 #:style 'long-dash #:color "Slate Gray")
+                     (hrule uppwer-whisker #:width 1.5 #:style 'long-dash #:color "Slate Gray")
+                     (hover-label
+                      x y
+                      (make-hover-badge
+                       `(("Q1 (25%)" ,(~a (exact-round q1)))
+                         ("Median (50%)" ,(~a (exact-round median)))
+                         ("Q3 (75%)" ,(~a (exact-round q3)))
+                         ("Upper Cutoff" ,(~a (exact-round uppwer-whisker)))
+                         ("Outlier Count" ,(~a (length o)))))))))))
       (send snip set-overlay-renderers (flatten renderers)))
 
     (set-iqr-scale iqr-scale)
