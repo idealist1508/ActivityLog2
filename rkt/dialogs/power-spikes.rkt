@@ -133,7 +133,11 @@
                     #:color "coral"
                     #:sym 'circle8
                     #:size 5
-                    #:line-width 3)))
+                    #:line-width 3))
+
+      (when snip
+        (send snip set-overlay-renderers
+              (flatten (list bnw-renderer outlier-renderer)))))
 
     (define/private (closest-outlier x y)
       (for/fold ([point #f]
@@ -218,10 +222,11 @@
       (send snip set-overlay-renderers (flatten renderers)))
 
     (set-iqr-scale iqr-scale)
-    (send snip set-overlay-renderers (flatten (list bnw-renderer outlier-renderer)))
     (send snip set-mouse-event-callback hover-callback)
 
     (define/public (get-snip) snip)
+    (define/public (get-cutoff) (bnw-data-uppwer-whisker bnw))
+    (define/public (get-outlier-count) (length (bnw-data-outliers bnw)))
 
     ))
 
@@ -242,7 +247,12 @@
        [min-height min-height]
        [parent (if parent (send parent get-top-level-window) #f)]))
 
+    (define message-font
+      (send the-font-list find-or-create-font 12 'default 'normal 'normal))
+
     (define toplevel-window (make-toplevel-dialog #f))
+
+    (define plot #f)
 
     (define dashboard-contents
       (new vertical-panel%
@@ -261,7 +271,70 @@
       (new plot-container%
            [parent dashboard-contents]))
 
-    (define plot #f)
+    (define controls-group-box
+      (new group-box-panel%
+           [parent dashboard-contents]
+           [label "Outlier Filtering"]
+           [alignment '(center center)]
+           [stretchable-height #f]
+           [border 20]
+           [spacing 10]))
+
+    (define controls-pane
+      (new horizontal-pane%
+           [parent controls-group-box]
+           [spacing 10]))
+
+    (define iqr-scale-slider
+      (new slider%
+           [label "Inter Quantile Scale"]
+           [parent controls-pane]
+           [min-value 15]
+           [max-value 100]
+           [init-value 40]
+           [style '(horizontal plain)]
+           [callback (lambda (c e) (on-iqr-scale c e))]))
+
+    (define iqr-scale-message
+      (new message%
+           [label "IQR Scale:"]
+           [parent controls-pane]))
+
+    (define iqr-scale-value
+      (new message%
+           [label "XXXXXX"]
+           [parent controls-pane]
+           [font message-font]))
+
+    (define cutoff-message
+      (new message%
+           [label "Cutoff Value:"]
+           [parent controls-pane]))
+
+    (define cutoff-value
+      (new message%
+           [label "XXXXXX"]
+           [parent controls-pane]
+           [font message-font]))
+
+    (define outlier-count-message
+      (new message%
+           [label "Outlier Count:"]
+           [parent controls-pane]))
+
+    (define outlier-count
+      (new message%
+           [label "XXXXXX"]
+           [parent controls-pane]
+           [font message-font]))
+
+    (define/private (on-iqr-scale control event)
+      (define v (/ (send control get-value) 10.0))
+      (when plot
+        (send plot set-iqr-scale v)
+        (send iqr-scale-value set-label (~r v #:precision 2))
+        (send cutoff-value set-label (~a (exact-round (send plot get-cutoff))))
+        (send outlier-count set-label (~a (exact-round (send plot get-outlier-count))))))
 
     (define (on-close-dashboard)
       (void))

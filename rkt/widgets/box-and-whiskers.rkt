@@ -38,13 +38,13 @@
          [lower-limit (- q1 (* iqr-scale iqr))]
          [upper-limit (+ q3 (* iqr-scale iqr))]
          [lower-whisker (sequence-fold
-                         (lambda (sample a)
-                           (if (> sample lower-limit) (min a sample) a))
-                         upper-limit vs)]
+                         (lambda (a sample)
+                           (if (>= sample lower-limit) (min a sample) a))
+                         q1 vs)]
          [upper-whisker (sequence-fold
-                         (lambda (sample a)
-                           (if (< sample upper-limit) (max a sample) a))
-                         lower-limit vs)]
+                         (lambda (a sample)
+                           (if (<= sample upper-limit) (max a sample) a))
+                         q3 vs)]
          [outliers (sequence-filter
                     (lambda (sample) (or (> sample upper-whisker)
                                          (< sample lower-whisker))) vs)])
