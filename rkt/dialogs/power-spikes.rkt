@@ -39,7 +39,7 @@
 
 (define outlier-plot%
   (class object%
-    (init-field df series [iqr-scale 4.0])
+    (init-field df series [iqr-scale 4.0] [width 100] [height 100])
     (super-new)
 
     (define md (find-series-metadata series))
@@ -64,7 +64,8 @@
         (plot-snip
          (list
           (lines plot-data #:color (send md plot-color) #:width 1.5))
-         #:x-min min-x #:y-min min-y #:y-max max-y)))
+         #:x-min min-x #:y-min min-y #:y-max max-y
+         #:width width #:height height)))
 
     (define bnw #f)    ; box-and-whiskers data produced by `samples->bnw-data`
     (define outliers #())               ; list of outlier points based on BNW
@@ -285,16 +286,6 @@
            [parent controls-group-box]
            [spacing 10]))
 
-    (define iqr-scale-slider
-      (new slider%
-           [label "Inter Quantile Scale"]
-           [parent controls-pane]
-           [min-value 15]
-           [max-value 100]
-           [init-value 40]
-           [style '(horizontal plain)]
-           [callback (lambda (c e) (on-iqr-scale c e))]))
-
     (define iqr-scale-message
       (new message%
            [label "IQR Scale:"]
@@ -302,9 +293,19 @@
 
     (define iqr-scale-value
       (new message%
-           [label "XXXXXX"]
+           [label "      "]
            [parent controls-pane]
            [font message-font]))
+
+    (define iqr-scale-slider
+      (new slider%
+           [label ""]
+           [parent controls-pane]
+           [min-value 15]
+           [max-value 100]
+           [init-value 40]
+           [style '(horizontal plain)]
+           [callback (lambda (c e) (on-iqr-scale c e))]))
 
     (define cutoff-message
       (new message%
@@ -313,7 +314,7 @@
 
     (define cutoff-value
       (new message%
-           [label "XXXXXX"]
+           [label "      "]
            [parent controls-pane]
            [font message-font]))
 
@@ -324,7 +325,7 @@
 
     (define outlier-count
       (new message%
-           [label "XXXXXX"]
+           [label "      "]
            [parent controls-pane]
            [font message-font]))
 
@@ -346,7 +347,18 @@
       (send dashboard-contents begin-container-sequence)
       (when sinfo
         (send headline set-pict (and sinfo (pp-session-info/pict sinfo))))
-      (set! plot (new outlier-plot% [df df] [series "pwr"]))
+      (define iqr-scale 4.0)            ; TODO: read from config
+      (define-values (w h) (send plot-container cell-dimensions 1))
+      (set! plot (new outlier-plot%
+                      [df df]
+                      [series "pwr"]
+                      [iqr-scale iqr-scale]
+                      [width w]
+                      [height h]))
+      (send iqr-scale-slider set-value (exact-round (* iqr-scale 10.0)))
+      (send iqr-scale-value set-label (~r iqr-scale #:precision 2))
+      (send cutoff-value set-label (~a (exact-round (send plot get-cutoff))))
+      (send outlier-count set-label (~a (exact-round (send plot get-outlier-count))))
       (send plot-container set-snip (send plot get-snip))
       (send dashboard-contents end-container-sequence))
 
