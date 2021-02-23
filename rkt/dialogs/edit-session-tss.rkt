@@ -241,7 +241,7 @@
 
       (set! threshold-power
             (new number-input-field% [parent tss-selection-pane]
-                 [label "Threshold Power: "] [style '(single deleted)]
+                 [label "FTP: "] [style '(single deleted)]
                  [min-width 100] [stretchable-width #f]
                  [cue-text "watts"]
                  [valid-value-cb (lambda (v) (calculate-tss))]))

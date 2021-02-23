@@ -18,25 +18,186 @@
 ;; You should have received a copy of the GNU General Public License along
 ;; with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-(require "dashboard-common.rkt"
-         "../session-df/session-df.rkt"
-         "../session-df/series-metadata.rkt"
-         "../utilities.rkt"
-         "../widgets/box-and-whiskers.rkt"
-         data-frame
+(require data-frame
          db/base
-         racket/class
-         racket/gui/base
-         racket/contract
-         racket/match
-         racket/math
-         racket/list
-         racket/format
+         math/statistics
          plot
          plot-container
          plot-container/hover-util
-         "../fmt-util.rkt")
+         racket/class
+         racket/contract
+         racket/format
+         racket/gui/base
+         racket/list
+         racket/match
+         racket/math
+         "../fmt-util.rkt"
+         "../models/coggan.rkt"
+         "../session-df/series-metadata.rkt"
+         "../session-df/session-df.rkt"
+         "../sport-charms.rkt"
+         "../time-in-zone.rkt"
+         "../utilities.rkt"
+         "../widgets/box-and-whiskers.rkt"
+         "../widgets/main.rkt"
+         "dashboard-common.rkt")
 
+;; Return a mapping of timestamp to trackpoint ID for every trackpoint in the
+;; session SID.
+(define (get-timestamp-mapping db sid)
+  (define trackpoint-id-sql
+    "select T.id as id,
+            T.timestamp as timestamp
+       from A_TRACKPOINT T, A_LENGTH L, A_LAP P
+      where T.length_id = L.id
+        and L.lap_id = P.id
+        and P.session_id = ?")
+
+  (for/hash (([id timestamp] (in-query db trackpoint-id-sql sid)))
+    (values timestamp id)))
+
+;; Return a mapping of timestamp to lap section summary ID for each lap in the
+;; session SID.
+;;
+;; NOTE: WE DON'T RETURN LAP IDS!!!!!
+(define (get-lap-mapping db sid)
+  (define lap-ssid-sql
+    "select P.summary_id as id,
+            P.start_time as timestamp
+       from A_LAP P
+      where P.session_id = ?")
+
+  (for/hash (([id timestamp] (in-query db lap-ssid-sql sid)))
+    (values timestamp id)))
+
+;; Clear out the power and cycling dynamics values for all track points which
+;; are above the CUTOFF power inside the dataframe DF.  This code operates
+;; directly on the database, and after running it the data-frame will contain
+;; outdated data, a 'session-updated-data event is logged, so, when the data
+;; frame is cleared from the cache and `session-df` reads it back from the
+;; database.
+(define (clear-power-spikes db df cutoff)
+  (define clear-power-data-sql
+    "update A_TRACKPOINT
+        set power = null,
+            accumulated_power = null,
+            left_right_balance = null,
+            left_torque_effectiveness = null,
+            right_torque_effectiveness = null,
+            left_pedal_smoothness = null,
+            right_pedal_smoothness = null,
+            left_pco = null,
+            right_pco = null,
+            left_pp_start = null,
+            left_pp_end = null,
+            right_pp_start = null,
+            right_pp_end = null,
+            left_ppp_start = null,
+            left_ppp_end = null,
+            right_ppp_start = null,
+            right_ppp_end = null
+      where id = ?")
+  (define sid (df-get-property df 'session-id))
+  (define mapping (get-timestamp-mapping db sid))
+  (call-with-transaction
+   db
+   (lambda ()
+     (for (([timestamp power] (in-data-frame df "timestamp" "pwr")))
+       (when (and power (> power cutoff))
+         (query-exec db clear-power-data-sql (hash-ref mapping timestamp))))))
+  (log-event 'session-updated-data sid))
+
+;; Store a value in the SECTION_SUMMARY table for the SSID row.  FIELD-NAME is
+;; updated to VALUE.
+(define (put-section-summary-value db ssid field-name value)
+  (query-exec
+   db
+   (format "update SECTION_SUMMARY set ~a = ? where id = ?" field-name)
+   value ssid))
+
+;; Store/Update the Coggan metrics CGMETRICS for session SID.
+(define (put-session-cg-metrics sid cgmetrics #:database db)
+  (match-define (cg ftp np if tss) cgmetrics)
+  (call-with-transaction
+   db
+   (lambda ()
+     (define ssid (query-value db "select summary_id from A_SESSION where id = ?" sid))
+     (query-exec
+      db
+      "update A_SESSION set intensity_factor = ?, training_stress_score = ? where id = ?"
+      if tss sid)
+     (put-section-summary-value db ssid "normalized_power" np))))
+
+;; Update the section summary SSID based on the data-frame averages from START
+;; to STOP.  Updates average and maximum power plus all the average cycling
+;; dynamics values.
+(define (put-section-summary-stats db ssid df #:start (start 0) #:stop (stop (df-row-count df)))
+
+  (when (df-contains? df "pwr")
+    (let ((stats (df-statistics df "pwr" #:start start #:stop stop)))
+      (put-section-summary-value db ssid "avg_power" (statistics-mean stats))
+      (put-section-summary-value db ssid "max_power" (statistics-max stats))))
+
+  (define (put-avg series dbcol)
+    (when (df-contains? df series)
+      (let ((stats (df-statistics df series #:start start #:stop stop)))
+        (put-section-summary-value db ssid dbcol (statistics-mean stats)))))
+
+  (put-avg "lrbal" "left_right_balance")
+  (put-avg "lteff" "avg_left_torque_effectiveness")
+  (put-avg "rteff" "avg_right_torque_effectiveness")
+  (put-avg "lpsmth" "avg_left_pedal_smoothness")
+  (put-avg "rpsmth" "avg_right_pedal_smoothness")
+  (put-avg "lpco" "avg_left_pco")
+  (put-avg "rpco" "avg_right_pco")
+  (put-avg "lpps" "avg_left_pp_start")
+  (put-avg "lppe" "avg_left_pp_end")
+  (put-avg "rpps" "avg_right_pp_start")
+  (put-avg "rppe"  "avg_right_pp_end")
+
+  (put-avg "lppps" "avg_left_ppp_start")
+  (put-avg "lpppe" "avg_left_ppp_end")
+  (put-avg "rppps" "avg_right_ppp_start")
+  (put-avg "rpppe"  "avg_right_ppp_end"))
+
+;; Fix power spikes: power data values above CUTOFF are cleared out and Coggan
+;; metrics + averages are recalculated.
+(define (fix-power-spikes df cutoff #:database db #:ftp ftp)
+  (call-with-transaction
+   db
+   (lambda ()
+     (define sid (df-get-property df 'session-id))
+     (define ssid (query-value db "select summary_id from A_SESSION where id = ?" sid))
+     (clear-power-spikes db df cutoff)
+     (define ndf (session-df db sid))      ; read it back again
+     (define scgm (cg-metrics ndf #:ftp ftp))
+     (put-section-summary-stats db ssid ndf)
+     (put-session-cg-metrics sid scgm #:database db)
+     (define lmapping (get-lap-mapping db sid))
+     (define laps (df-get-property df 'laps))
+     (for ([start (in-vector laps)]
+           [end (in-sequences (in-vector laps 1) (in-value #f))])
+       (match-define (list sindex eindex)
+         (if end
+             (df-index-of* df "timestamp" start end)
+             (list
+              (df-index-of df "timestamp" start)
+              (df-row-count df))))
+       (define lcgm (cg-metrics ndf #:ftp ftp #:start sindex #:stop eindex))
+       (define ssid (hash-ref lmapping start))
+       (put-section-summary-value db ssid "normalized_power" (cg-np lcgm))
+       (put-section-summary-stats db ssid ndf #:start sindex #:stop eindex)
+       (query-exec db "delete from BAVG_CACHE where session_id = ?" sid)
+       (query-exec db "delete from HIST_CACHE where session_id = ?" sid)
+       (query-exec db "delete from SCATTER_CACHE where session_id = ?" sid)
+       (update-some-session-metrics sid db)))))
+
+;; Maintain a plot snip showing the power data (actually any specified
+;; SERIES), marking the outliers and showing a box and whiskers plot for the
+;; series data.  The plot also has a "hover" information for the series.
+;; Parameters for the plot can be dynamically adjusted (see `set-iqr-scale`)
+;; and the cutoff outlier value can be retrieved from the plot (see
+;; `get-cutoff`).
 (define outlier-plot%
   (class object%
     (init-field df series [iqr-scale 4.0] [width 100] [height 100])
@@ -73,6 +234,11 @@
     (define bnw-renderer-highlighted #f)
     (define outlier-renderer #f)
 
+    ;; Update the Inter-Quantile scale for the plot.  This is a factor used to
+    ;; multiply the inter quantile range (the difference between the 25% and
+    ;; 75% quantiles), and is used to determine the highest and lowest
+    ;; reasonable values for the data.  Data outside that is considered to be
+    ;; an outlier.
     (define/public (set-iqr-scale new-iqr-scale)
       (set! iqr-scale new-iqr-scale)
       (set! bnw (samples->bnw-data samples #:iqr-scale iqr-scale))
@@ -140,6 +306,10 @@
         (send snip set-overlay-renderers
               (flatten (list bnw-renderer outlier-renderer)))))
 
+    ;; Find the closest outlier to the position X, Y.  If outliers are
+    ;; present, a closest outlier will always be found.  Return the outlier
+    ;; point as well as the distance to it -- the distance is used to
+    ;; determine if the point is in fact too far from the X, Y coordinate.
     (define/private (closest-outlier x y)
       (for/fold ([point #f]
                  [distance #f])
@@ -152,6 +322,9 @@
             (values outlier d)
             (values point distance))))
 
+    ;; Create a hover label for the plot to be shown at X,Y for the point
+    ;; POINT.  If OUTLIER? is #t, the label will reflect the fact that this is
+    ;; an outlier point.
     (define/private (make-hover-label x y point #:outlier? [outlier? #f])
       (match-define (vector duration value) point)
       (if outlier?
@@ -167,6 +340,17 @@
             `(("Time" ,(duration->string duration))
               (,(send md name) ,(~a (exact-round value))))))))
 
+    ;; Hover callback fort the plot snip. Displays additional information on
+    ;; the plot depending on where the mouse is:
+    ;;
+    ;; * on the plot itself, it displays the current value of the series
+    ;;
+    ;; * close to an outlier point will highlight the outlier and display
+    ;;   information about the outlier.
+    ;;
+    ;; * on the box-and-whiskers plot it displays information about the
+    ;;   quantiles.
+    ;;
     ;; NOTE: this cannot be a method (e.g. define/private as it is used as a
     ;; callback
     (define (hover-callback snip event x y)
@@ -279,7 +463,7 @@
            [alignment '(center center)]
            [stretchable-height #f]
            [border 20]
-           [spacing 10]))
+           [spacing 20]))
 
     (define controls-pane
       (new horizontal-pane%
@@ -329,6 +513,82 @@
            [parent controls-pane]
            [font message-font]))
 
+    (define ftp-message
+      (new message%
+           [label "FTP Setting:"]
+           [parent controls-pane]))
+
+    (define ftp-input
+      (new number-input-field% [parent controls-pane]
+           [label ""]
+           [min-width 100] [stretchable-width #f]
+           [font message-font]
+           [allow-empty? #f]
+           [cue-text "watts"]))
+
+    (define buttons-box
+      (new horizontal-pane%
+           [parent dashboard-contents]
+           [alignment '(right center)]
+           [stretchable-height #f]
+           [border 20]
+           [spacing 20]))
+
+    (define do-fixups-button
+      (new button%
+           [parent buttons-box]
+           [label "Remove Marked Outlier Points"]
+           [callback (lambda (b e) (on-remove-outliers))]))
+
+    (define close-button
+      (new button%
+           [parent buttons-box]
+           [label "Close"]
+           [callback (lambda (b e)
+                       (when toplevel-window
+                         (send toplevel-window show #f)))]))
+
+    (define/private (on-remove-outliers)
+      (let/ec return
+        (define ftp (send ftp-input get-converted-value))
+        (define cutoff (send plot get-cutoff))
+        (unless ftp
+          (message-box "Invalid FTP Setting"
+                       "Need a valid FTP value"
+                       toplevel-window
+                       '(ok stop)
+                       #:dialog-mixin (lambda (d%)
+                                        (class d%
+                                          (init) (super-new)
+                                          (send this border 20)
+                                          (send this spacing 20))))
+          (return #f))
+        (define proceed?
+          (message-box "Clear Power Spikes?"
+                       (format "Clear Power Spikes above ~a watts?" cutoff)
+                       toplevel-window
+                       '(yes-no)
+                       #:dialog-mixin (lambda (d%)
+                                        (class d%
+                                          (init) (super-new)
+                                          (send this border 20)
+                                          (send this spacing 20)))))
+        (when (equal? proceed? 'yes)
+          (send do-fixups-button enable #f)
+          (send close-button enable #f)
+          (send plot-container clear-all)
+          (send plot-container set-background-message "Clearing power spikes...")
+          (thread/dbglog
+           (lambda ()
+             (fix-power-spikes df cutoff #:database database #:ftp ftp)
+             (define sid (df-get-property df 'session-id))
+             (put-athlete-ftp ftp)
+             (load-data database sid)
+             (queue-callback
+              (lambda ()
+                (send plot-container set-background-message "")
+                (send close-button enable #t))))))))
+
     (define/private (on-iqr-scale control event)
       (define v (/ (send control get-value) 10.0))
       (when plot
@@ -359,6 +619,9 @@
       (send iqr-scale-value set-label (~r iqr-scale #:precision 2))
       (send cutoff-value set-label (~a (exact-round (send plot get-cutoff))))
       (send outlier-count set-label (~a (exact-round (send plot get-outlier-count))))
+      (let ((ftp (get-athlete-ftp db)))
+        (when ftp
+          (send ftp-input set-value (n->string ftp))))
       (send plot-container set-snip (send plot get-snip))
       (send dashboard-contents end-container-sequence))
 
@@ -368,8 +631,11 @@
           (send dashboard-contents reparent toplevel)
           (set! toplevel-window toplevel))
         (thread/dbglog (lambda () (load-data db sid)))
+        (send close-button enable #t)
+        (send plot-container set-background-message "")
+        (send do-fixups-button enable #t)
         (send toplevel-window show #t) ; will block until finish-dialog is called
-        (void)))
+        (set! toplevel-window old-toplevel)))
 
     ))
 
