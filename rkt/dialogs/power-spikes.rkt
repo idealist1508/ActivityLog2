@@ -550,6 +550,8 @@
 
     (define/private (on-remove-outliers)
       (let/ec return
+        (unless plot     ; we should not be called when there is no power data
+         (return (void)))
         (define ftp (send ftp-input get-converted-value))
         (define cutoff (send plot get-cutoff))
         (unless ftp
@@ -583,6 +585,9 @@
              (fix-power-spikes df cutoff #:database database #:ftp ftp)
              (define sid (df-get-property df 'session-id))
              (put-athlete-ftp ftp)
+             ;; Save the IQR scale as a preference
+             (let ([iqr-scale (/ (send iqr-scale-slider get-value) 10.0)])
+               (put-pref 'power-spikes-iqr-scale iqr-scale))
              (load-data database sid)
              (queue-callback
               (lambda ()
@@ -594,8 +599,9 @@
       (when plot
         (send plot set-iqr-scale v)
         (send iqr-scale-value set-label (~r v #:precision 2))
-        (send cutoff-value set-label (~a (exact-round (send plot get-cutoff))))
-        (send outlier-count set-label (~a (exact-round (send plot get-outlier-count))))))
+        (when plot
+          (send cutoff-value set-label (~a (exact-round (send plot get-cutoff))))
+          (send outlier-count set-label (~a (exact-round (send plot get-outlier-count)))))))
 
     (define (on-close-dashboard)
       (void))
@@ -607,22 +613,29 @@
       (send dashboard-contents begin-container-sequence)
       (when sinfo
         (send headline set-pict (and sinfo (pp-session-info/pict sinfo))))
-      (define iqr-scale 4.0)            ; TODO: read from config
+      (define iqr-scale (get-pref 'power-spikes-iqr-scale (lambda () 4.0)))
       (define-values (w h) (send plot-container cell-dimensions 1))
-      (set! plot (new outlier-plot%
-                      [df df]
-                      [series "pwr"]
-                      [iqr-scale iqr-scale]
-                      [width w]
-                      [height h]))
+      (if (df-contains? df "pwr")
+          (set! plot (new outlier-plot%
+                          [df df]
+                          [series "pwr"]
+                          [iqr-scale iqr-scale]
+                          [width w]
+                          [height h]))
+          (set! plot #f))
       (send iqr-scale-slider set-value (exact-round (* iqr-scale 10.0)))
       (send iqr-scale-value set-label (~r iqr-scale #:precision 2))
-      (send cutoff-value set-label (~a (exact-round (send plot get-cutoff))))
-      (send outlier-count set-label (~a (exact-round (send plot get-outlier-count))))
+      (send cutoff-value set-label (~a (exact-round (if plot (send plot get-cutoff) 0))))
+      (send outlier-count set-label (~a (exact-round (if plot (send plot get-outlier-count) 0))))
       (let ((ftp (get-athlete-ftp db)))
         (when ftp
           (send ftp-input set-value (n->string ftp))))
-      (send plot-container set-snip (send plot get-snip))
+      (if plot
+          (send plot-container set-snip (send plot get-snip))
+          (begin
+            (send plot-container clear-all)
+            (send plot-container set-background-message "No Power Data")
+            (send do-fixups-button enable #f)))
       (send dashboard-contents end-container-sequence))
 
     (define/public (show-dashboard parent db sid)
