@@ -250,6 +250,10 @@
     ;; produce a value for that column only.
     (define the-data '())
 
+    (define prev-selected-item #f)
+    (define was-dblclick #f)
+    (define dblclick-interval (send (new keymap%) get-double-click-interval))
+
     (define default-export-file-name #f)
     (define setup-fields-dlg #f)
 
@@ -343,12 +347,30 @@
         (cond ((eq? event-type 'list-box-column)
                (sort-by-column (send event get-column)))
               ((eq? event-type 'list-box)
+               ;; prevent multiselect
+               (let ((sels (send lb get-selections)))
+                 (when ( > (length sels) 1)
+                   (send lb set-selection (if (eq? (car sels) prev-selected-item) (last sels) (car sels)))))  
                (let ((sel (send lb get-selection)))
                  (when sel
-                   (on-select sel (send lb get-data sel)))))
+                   ;; click on selected item -> deselect (after waiting for a dblclick)
+                   (cond ([eq? sel prev-selected-item]
+                              (set! was-dblclick #f)
+                              (new timer%
+                                   [notify-callback
+                                      (lambda ()
+                                        (when (not was-dblclick)
+                                          (send lb select prev-selected-item #f)
+                                          (on-deselect)
+                                          (set! prev-selected-item #f)))]
+                                   [interval dblclick-interval]
+                                   [just-once? #t] ))
+                          [else (on-select sel (send lb get-data sel))])
+                   (set! prev-selected-item (send the-list-box get-selection)))))
               ((eq? event-type 'list-box-dclick)
                (let ((sel (send lb get-selection)))
                  (when sel
+                   (set! was-dblclick #t)
                    (on-double-click sel (send lb get-data sel))))))))
 
     (define the-pane (new vertical-pane% [parent parent] [alignment '(left center)]))
@@ -380,7 +402,6 @@
        [choices '()]
        [callback lb-callback]
        [style '(multiple
-                single
                 variable-columns
                 clickable-headers
                 column-headers
@@ -565,6 +586,11 @@
     ;; Can be overriden if the user wants to be notified when an item is
     ;; selected
     (define/public (on-select row-index row-data)
+      #f)
+
+    ;; Can be overriden if the user wants to be notified when an item is
+    ;; deselected
+    (define/public (on-deselect)
       #f)
 
     ))
